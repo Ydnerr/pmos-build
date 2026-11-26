@@ -18,8 +18,8 @@ on:
         description: "Tampilan (RAM 2 GB: pilih yang ringan)"
         required: false
         type: choice
-        options: ["xfce4", "sxmo-de-sway", "phosh", "plasma-mobile", "none"]
-        default: "xfce4"
+        options: ["phosh", "xfce4", "sxmo-de-sway", "plasma-mobile", "none"]
+        default: "phosh"
       username:
         description: "Username"
         required: false
@@ -39,7 +39,17 @@ on:
         description: "Paket tambahan, pisah koma (contoh: openssh,nano,iwd)"
         required: false
         type: string
-        default: "nano"
+        default: "nano,openssh"
+      wifi_ssid:
+        description: "SSID WiFi untuk auto-konek saat boot (kosongkan kalau tidak perlu)"
+        required: false
+        type: string
+        default: ""
+      wifi_pass:
+        description: "Password WiFi (terlihat di UI Actions, jangan pakai password penting)"
+        required: false
+        type: string
+        default: ""
 
 jobs:
   build:
@@ -49,7 +59,7 @@ jobs:
       - name: Install dependensi
         run: |
           sudo apt-get update
-          sudo apt-get install -y git openssl
+          sudo apt-get install -y git openssl android-sdk-libsparse-utils
           git clone --depth=1 https://gitlab.postmarketos.org/postmarketOS/pmbootstrap.git "$HOME/pmbootstrap"
           mkdir -p "$HOME/.local/bin"
           ln -sf "$HOME/pmbootstrap/pmbootstrap.py" "$HOME/.local/bin/pmbootstrap"
@@ -111,6 +121,57 @@ jobs:
           IN_PASS: ${{ inputs.password }}
         run: |
           pmbootstrap --timeout 3600 -y install --password "${IN_PASS:-147147}"
+
+      - name: Setup WiFi otomatis dan sshd di rootfs
+        env:
+          IN_SSID: ${{ inputs.wifi_ssid }}
+          IN_WPASS: ${{ inputs.wifi_pass }}
+        run: |
+          RD="$HOME/.local/var/pmbootstrap/chroot_native/home/pmos/rootfs"
+          sudo ls -lh "$RD" || true
+
+          # Pilih image rootfs (prioritas *-root.img, lalu img non-boot)
+          IMG=$(sudo find "$RD" -maxdepth 1 -type f -name '*-root.img' | head -1)
+          [ -z "$IMG" ] && IMG=$(sudo find "$RD" -maxdepth 1 -type f -name '*.img' ! -name '*-boot.img' | head -1)
+          if [ -z "$IMG" ]; then
+            echo "WARNING: image rootfs tidak ketemu, step ini dilewati"
+            exit 0
+          fi
+          echo "rootfs: $IMG"
+
+          # Kalau sparse, ubah ke raw dulu supaya bisa di-mount
+          if sudo file "$IMG" | grep -qi "sparse"; then
+            sudo simg2img "$IMG" /tmp/rootfs.raw
+            sudo mv /tmp/rootfs.raw "$IMG"
+          fi
+
+          R=/mnt/rootfs
+          sudo mkdir -p "$R"
+          if ! sudo mount -o loop "$IMG" "$R"; then
+            echo "WARNING: gagal mount rootfs, step ini dilewati"
+            exit 0
+          fi
+
+          # sshd aktif otomatis saat boot
+          sudo mkdir -p "$R/etc/runlevels/default"
+          sudo ln -sf /etc/init.d/sshd "$R/etc/runlevels/default/sshd"
+
+          # WiFi auto-konek lewat NetworkManager (kalau SSID diisi)
+          if [ -n "$IN_SSID" ]; then
+            CONN="$R/etc/NetworkManager/system-connections/auto-wifi.nmconnection"
+            sudo mkdir -p "$R/etc/NetworkManager/system-connections"
+            printf '[connection]\nid=%s\ntype=wifi\nautoconnect=true\n\n[wifi]\nmode=infrastructure\nssid=%s\n\n[wifi-security]\nkey-mgmt=wpa-psk\npsk=%s\n\n[ipv4]\nmethod=auto\n\n[ipv6]\nmethod=auto\n' \
+              "$IN_SSID" "$IN_SSID" "$IN_WPASS" | sudo tee "$CONN" > /dev/null
+            sudo chmod 600 "$CONN"
+            echo "WiFi auto-konek dipasang untuk SSID: $IN_SSID"
+          fi
+
+          echo "== cek hasil =="
+          sudo ls -l "$R/etc/runlevels/default/" | grep -i ssh || echo "sshd belum terdaftar (cek paket openssh)"
+          sudo ls -l "$R/etc/init.d/sshd" || echo "WARNING: /etc/init.d/sshd tidak ada, pastikan openssh ada di extra_packages"
+
+          sudo sync
+          sudo umount "$R"
 
       - name: Export hasil
         run: |
