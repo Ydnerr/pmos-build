@@ -550,3 +550,35 @@ jobs:
           path: out/
           compression-level: 6
           if-no-files-found: error
+
+  lk2nd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Install dependensi lk2nd
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential git python3 gcc-arm-none-eabi \
+            device-tree-compiler libfdt-dev
+
+      - name: Clone lk2nd
+        run: |
+          git clone --depth 1 --recurse-submodules --shallow-submodules \
+            https://github.com/msm8916-mainline/lk2nd.git
+          git -C lk2nd log -1 --oneline
+
+      - name: Build lk2nd-msm8952 (Redmi 4A rolex)
+        working-directory: lk2nd
+        run: |
+          make TOOLCHAIN_PREFIX=arm-none-eabi- lk2nd-msm8952 -j"$(nproc)"
+          ls -lh build-lk2nd-msm8952/
+          mkdir -p ../out-lk2nd
+          cp build-lk2nd-msm8952/lk2nd.img ../out-lk2nd/lk2nd-msm8952-rolex.img
+          sha256sum ../out-lk2nd/*.img
+
+      - name: Upload lk2nd
+        uses: actions/upload-artifact@v4
+        with:
+          name: lk2nd-rolex
+          path: out-lk2nd/
+          if-no-files-found: error
