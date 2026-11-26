@@ -76,19 +76,28 @@ jobs:
           IN_HOST: ${{ inputs.hostname }}
           IN_EXTRA: ${{ inputs.extra_packages }}
         run: |
-          pmbootstrap config device "$IN_DEVICE"
-          pmbootstrap config ui "$IN_UI"
-          pmbootstrap config user "$IN_USER"
-          pmbootstrap config hostname "$IN_HOST"
-          pmbootstrap config extra_packages "$IN_EXTRA"
-          pmbootstrap config nonfree_firmware True
+          # pmbootstrap butuh file config; kita tulis langsung (nama beda antar versi)
+          mkdir -p "$HOME/.config"
+          for f in pmbootstrap_v3.cfg pmbootstrap.cfg; do
+            cat > "$HOME/.config/$f" <<EOF
+          [pmbootstrap]
+          device = $IN_DEVICE
+          ui = $IN_UI
+          user = $IN_USER
+          hostname = $IN_HOST
+          extra_packages = $IN_EXTRA
+          nonfree_firmware = True
+          work = $HOME/.local/var/pmbootstrap
+          EOF
+          done
+          # Tampilkan hasil baca config
           pmbootstrap config
 
       - name: Build image (pmbootstrap install)
         env:
           IN_PASS: ${{ inputs.password }}
         run: |
-          pmbootstrap -y install --password "$IN_PASS"
+          pmbootstrap --timeout 3600 -y install --password "$IN_PASS"
 
       - name: Export hasil
         run: |
