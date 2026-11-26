@@ -119,8 +119,12 @@ jobs:
       - name: Build image (pmbootstrap install)
         env:
           IN_PASS: ${{ inputs.password }}
+          IN_EXTRA: ${{ inputs.extra_packages }}
         run: |
-          pmbootstrap --timeout 3600 -y install --password "${IN_PASS:-147147}"
+          # Paket tambahan juga dikirim lewat --add, supaya pasti terpasang
+          # walaupun config file tidak terbaca pmbootstrap
+          EXTRA="openssh,${IN_EXTRA}"
+          pmbootstrap --timeout 3600 -y install --password "${IN_PASS:-147147}" --add "$EXTRA"
 
       - name: Setup WiFi otomatis dan sshd di rootfs
         env:
@@ -188,8 +192,16 @@ jobs:
           fi
 
           echo "== cek hasil =="
-          sudo ls -l "$R/etc/runlevels/default/" | grep -i ssh || echo "sshd belum terdaftar (cek paket openssh)"
-          sudo ls -l "$R/etc/init.d/sshd" || echo "WARNING: /etc/init.d/sshd tidak ada, pastikan openssh ada di extra_packages"
+          sudo ls -l "$R/etc/runlevels/default/" | grep -i ssh || echo "sshd belum terdaftar"
+          if [ -e "$R/etc/init.d/sshd" ]; then
+            echo "OK: /etc/init.d/sshd ada"
+          else
+            echo "WARNING: /etc/init.d/sshd tidak ada"
+          fi
+          echo "== paket terpasang yang relevan =="
+          sudo grep -E '^P:(openssh|nano|networkmanager|phosh|postmarketos-ui-phosh)' "$R/lib/apk/db/installed" || echo "tidak ada yang cocok"
+          echo "== isi /etc/init.d =="
+          sudo ls "$R/etc/init.d" | tr '\n' ' '; echo
 
           sudo sync
           sudo umount "$R"
