@@ -86,7 +86,6 @@ jobs:
           WORK="$HOME/.local/var/pmbootstrap"
           mkdir -p "$WORK/cache_git"
           PM="$WORK/cache_git/pmaports"
-          # Clone semua branch: pmbootstrap selalu membaca channels.cfg dari origin/main
           git clone https://gitlab.postmarketos.org/postmarketOS/pmaports.git "$PM"
           git -C "$PM" fetch origin main
           if [ "$BRANCH" != "main" ]; then
@@ -96,7 +95,6 @@ jobs:
           echo "== channels.cfg (origin/main) =="
           git -C "$PM" show origin/main:channels.cfg | head -30
 
-          # Work folder dibuat manual, jadi tandai versinya supaya tidak diminta migrasi
           WV=$(grep -rhoE 'work_version *= *[0-9]+' "$HOME/pmbootstrap/pmb" 2>/dev/null | head -1 | grep -oE '[0-9]+$' || true)
           echo "${WV:-8}" > "$WORK/version"
           echo "work version: $(cat "$WORK/version")"
@@ -111,7 +109,6 @@ jobs:
           IN_HOST: ${{ inputs.hostname }}
           IN_EXTRA: ${{ inputs.extra_packages }}
         run: |
-          # pmbootstrap butuh file config; kita tulis langsung (nama beda antar versi)
           mkdir -p "$HOME/.config"
           for f in pmbootstrap_v3.cfg pmbootstrap.cfg; do
             cat > "$HOME/.config/$f" <<EOF
@@ -125,7 +122,6 @@ jobs:
           work = $HOME/.local/var/pmbootstrap
           EOF
           done
-          # Tampilkan hasil baca config
           pmbootstrap config
 
       - name: Build image (pmbootstrap install)
@@ -133,8 +129,6 @@ jobs:
           IN_PASS: ${{ inputs.password }}
           IN_EXTRA: ${{ inputs.extra_packages }}
         run: |
-          # Paket tambahan juga dikirim lewat --add, supaya pasti terpasang
-          # walaupun config file tidak terbaca pmbootstrap
           EXTRA="openssh,${IN_EXTRA}"
           pmbootstrap --timeout 3600 -y install --password "${IN_PASS:-147147}" --add "$EXTRA"
 
@@ -149,7 +143,6 @@ jobs:
           RD="$HOME/.local/var/pmbootstrap/chroot_native/home/pmos/rootfs"
           sudo ls -lh "$RD" || true
 
-          # Pilih image rootfs (prioritas *-root.img, lalu img non-boot)
           IMG=$(sudo find "$RD" -maxdepth 1 -type f -name '*-root.img' | head -1)
           [ -z "$IMG" ] && IMG=$(sudo find "$RD" -maxdepth 1 -type f -name '*.img' ! -name '*-boot.img' | head -1)
           if [ -z "$IMG" ]; then
@@ -158,7 +151,6 @@ jobs:
           fi
           echo "rootfs: $IMG"
 
-          # Kalau sparse, ubah ke raw dulu supaya bisa di-mount
           if sudo file "$IMG" | grep -qi "sparse"; then
             sudo simg2img "$IMG" /tmp/rootfs.raw
             sudo mv /tmp/rootfs.raw "$IMG"
@@ -168,8 +160,6 @@ jobs:
           B=/mnt/bootpart
           sudo mkdir -p "$R" "$B"
 
-          # Image ini full disk (ada tabel partisi: boot + root), jadi
-          # harus di-attach dengan scan partisi lalu cari partisi rootfs & boot
           LOOP=$(sudo losetup -fP --show "$IMG")
           sudo partprobe "$LOOP" 2>/dev/null || true
           sleep 2
@@ -189,7 +179,6 @@ jobs:
             fi
           done
 
-          # Coba mount partisi boot terpisah (jika ada)
           for P in "${LOOP}"p*; do
             [ -e "$P" ] || continue
             if mountpoint -q "$P" 2>/dev/null; then
@@ -211,13 +200,67 @@ jobs:
             exit 0
           fi
 
-          # Patch DTB touchscreen untuk FocalTech (rolex / msm8917)
           if [ "$IN_PATCH_DTB" = "true" ]; then
             echo "== Cari file DTB untuk patch touchscreen =="
             DTB_FILES=$(sudo find "$R/boot" "$B" -type f -name '*.dtb' 2>/dev/null \
               | grep -iE 'msm8917|rolex|msm8937|msm8953|qcom' || true)
             [ -z "$DTB_FILES" ] && DTB_FILES=$(sudo find "$R/boot" "$B" -type f -name '*.dtb' 2>/dev/null || true)
             echo "$DTB_FILES"
+
+            cat <<'PYEOF' > /tmp/patch_dts.py
+          import re, sys
+
+          path, compat = sys.argv[1], sys.argv[2]
+          with open(path, "r", encoding="utf-8", errors="ignore") as f:
+              src = f.read()
+
+          orig = src
+
+          def enable_touch_block(match):
+              block = match.group(0)
+              if re.search(r'touchscreen|goodix|ft5|edt|focaltech', block, re.I):
+                  block = re.sub(r'status\s*=\s*"disabled"\s*;', 'status = "okay";', block)
+                  block = re.sub(
+                      r'compatible\s*=\s*"[^"]*(goodix|ft5|edt|focaltech|melfas|synaptics)[^"]*"\s*;',
+                      f'compatible = "{compat}";',
+                      block,
+                      flags=re.I
+                  )
+              return block
+
+          src = re.sub(r'touchscreen[^{]*\{[\s\S]*?\n\t*\};', enable_touch_block, src)
+
+          src = re.sub(
+              r'(touchscreen@[0-9a-fA-F]+\s*\{[\s\S]*?)status\s*=\s*"disabled"\s*;',
+              r'\1status = "okay";',
+              src
+          )
+          src = re.sub(
+              r'(touchscreen@[0-9a-fA-F]+\s*\{[\s\S]*?)compatible\s*=\s*"[^"]+"\s*;',
+              rf'\1compatible = "{compat}";',
+              src
+          )
+
+          if "touchscreen@" not in src and re.search(r'i2c@78b7000\s*\{', src):
+              touch_node = f'''
+          \t\ttouchscreen@38 {{
+          \t\t\tcompatible = "{compat}";
+          \t\t\treg = <0x38>;
+          \t\t\tinterrupt-parent = <&tlmm>;
+          \t\t\tinterrupts = <65 0x2008>;
+          \t\t\treset-gpios = <&tlmm 64 0x01>;
+          \t\t\tstatus = "okay";
+          \t\t}};
+          '''
+              src = re.sub(r'(i2c@78b7000\s*\{)', r'\1' + touch_node, src, count=1)
+
+          if src != orig:
+              with open(path, "w", encoding="utf-8") as f:
+                  f.write(src)
+              print("DTS berhasil dimodifikasi")
+          else:
+              print("Tidak ada perubahan pola otomatis pada DTS ini")
+          PYEOF
 
             PATCHED_COUNT=0
             for DTB in $DTB_FILES; do
@@ -230,68 +273,10 @@ jobs:
                 continue
               fi
 
-              # Cek apakah DTS ini punya node touchscreen atau i2c bus
               if grep -qiE 'touchscreen|goodix|ft5|edt|i2c@' "$DTS_TMP"; then
                 echo "Memproses DTB: $DTB (compatible target: $IN_TOUCH_COMPAT)"
                 sudo cp "$DTB" "${DTB}.bak"
-
-                python3 - "$DTS_TMP" "$IN_TOUCH_COMPAT" <<'PYEOF'
-import re, sys
-
-path, compat = sys.argv[1], sys.argv[2]
-with open(path, "r", encoding="utf-8", errors="ignore") as f:
-    src = f.read()
-
-orig = src
-
-# 1. Aktifkan node touchscreen jika status = "disabled"
-def enable_touch_block(match):
-    block = match.group(0)
-    if re.search(r'touchscreen|goodix|ft5|edt|focaltech', block, re.I):
-        block = re.sub(r'status\s*=\s*"disabled"\s*;', 'status = "okay";', block)
-        block = re.sub(
-            r'compatible\s*=\s*"[^"]*(goodix|ft5|edt|focaltech|melfas|synaptics)[^"]*"\s*;',
-            f'compatible = "{compat}";',
-            block,
-            flags=re.I
-        )
-    return block
-
-src = re.sub(r'touchscreen[^{]*\{[\s\S]*?\n\t*\};', enable_touch_block, src)
-
-# 2. Jika ada node i2c@78b7000 atau i2c@78b6000 yang punya touchscreen@38 atau touchscreen@5d
-src = re.sub(
-    r'(touchscreen@[0-9a-fA-F]+\s*\{[\s\S]*?)status\s*=\s*"disabled"\s*;',
-    r'\1status = "okay";',
-    src
-)
-src = re.sub(
-    r'(touchscreen@[0-9a-fA-F]+\s*\{[\s\S]*?)compatible\s*=\s*"[^"]+"\s*;',
-    rf'\1compatible = "{compat}";',
-    src
-)
-
-# 3. Jika belum ada node touchscreen sama sekali di dalam i2c@78b7000, sisipkan node FocalTech
-if "touchscreen@" not in src and re.search(r'i2c@78b7000\s*\{', src):
-    touch_node = f'''
-\t\ttouchscreen@38 {{
-\t\t\tcompatible = "{compat}";
-\t\t\treg = <0x38>;
-\t\t\tinterrupt-parent = <&tlmm>;
-\t\t\tinterrupts = <65 0x2008>;
-\t\t\treset-gpios = <&tlmm 64 0x01>;
-\t\t\tstatus = "okay";
-\t\t}};
-'''
-    src = re.sub(r'(i2c@78b7000\s*\{)', r'\1' + touch_node, src, count=1)
-
-if src != orig:
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(src)
-    print("DTS berhasil dimodifikasi")
-else:
-    print("Tidak ada perubahan pola otomatis pada DTS ini")
-PYEOF
+                python3 /tmp/patch_dts.py "$DTS_TMP" "$IN_TOUCH_COMPAT"
 
                 if sudo dtc -I dts -O dtb -o "$DTB_TMP" "$DTS_TMP" 2>/dev/null; then
                   sudo cp "$DTB_TMP" "$DTB"
@@ -307,7 +292,6 @@ PYEOF
             echo "Total DTB ter-patch: $PATCHED_COUNT"
           fi
 
-          # sshd aktif otomatis saat boot (support systemd maupun OpenRC)
           if [ -d "$R/usr/lib/systemd/system" ] || [ -d "$R/etc/systemd/system" ]; then
             echo "Init system terdeteksi: systemd"
             sudo mkdir -p "$R/etc/systemd/system/multi-user.target.wants"
@@ -326,7 +310,6 @@ PYEOF
             sudo ln -sf /etc/init.d/sshd "$R/etc/runlevels/default/sshd"
           fi
 
-          # WiFi auto-konek lewat NetworkManager (kalau SSID diisi)
           if [ -n "$IN_SSID" ]; then
             CONN="$R/etc/NetworkManager/system-connections/auto-wifi.nmconnection"
             sudo mkdir -p "$R/etc/NetworkManager/system-connections"
@@ -363,7 +346,6 @@ PYEOF
           pmbootstrap export
           cp -L /tmp/postmarketOS-export/* out/ 2>/dev/null || true
 
-          # Cari image lk2nd (wajib untuk msm89x7) di semua chroot
           sudo find "$HOME/.local/var/pmbootstrap" -type f \
             \( -name 'lk2nd*.img' -o -name 'lk2nd*.mbn' \) 2>/dev/null \
             | while read -r f; do
@@ -371,7 +353,6 @@ PYEOF
                 sudo cp "$f" out/
               done
 
-          # Image rootfs hasil install
           sudo find "$HOME/.local/var/pmbootstrap/chroot_native/home/pmos/rootfs" \
             -maxdepth 1 -type f -name '*.img' 2>/dev/null \
             | while read -r f; do
