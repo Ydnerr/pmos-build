@@ -87,7 +87,7 @@ jobs:
       - name: Install dependensi
         run: |
           sudo apt-get update
-          sudo apt-get install -y debootstrap qemu-user-static binfmt-support rsync parted \
+          sudo apt-get install -y debootstrap qemu-user-binfmt binfmt-support rsync parted \
             e2fsprogs android-sdk-libsparse-utils device-tree-compiler python3 dosfstools
           sudo systemctl restart systemd-binfmt || true
 
@@ -116,7 +116,7 @@ jobs:
         run: |
           sudo debootstrap --arch=arm64 --foreign --variant=minbase \
             --components=main,non-free-firmware "$IN_SUITE" rootfs http://deb.debian.org/debian
-          sudo cp /usr/bin/qemu-aarch64-static rootfs/usr/bin/
+          sudo cp "$(command -v qemu-aarch64-static || command -v qemu-aarch64)" rootfs/usr/bin/qemu-aarch64-static
           sudo chroot rootfs /debootstrap/debootstrap --second-stage
 
       - name: Konfigurasi rootfs (Phosh, user, kernel, initramfs)
