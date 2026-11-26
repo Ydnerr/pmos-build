@@ -66,6 +66,12 @@ jobs:
           git clone --single-branch --branch "$BRANCH" \
             https://gitlab.postmarketos.org/postmarketOS/pmaports.git \
             "$WORK/cache_git/pmaports"
+
+          # Work folder dibuat manual, jadi tandai versinya supaya tidak diminta migrasi
+          WV=$(grep -rhoE 'work_version *= *[0-9]+' "$HOME/pmbootstrap/pmb" 2>/dev/null | head -1 | grep -oE '[0-9]+$' || true)
+          echo "${WV:-8}" > "$WORK/version"
+          echo "work version: $(cat "$WORK/version")"
+
           pmbootstrap --version
 
       - name: Konfigurasi pmbootstrap
