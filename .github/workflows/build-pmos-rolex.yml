@@ -147,8 +147,29 @@ jobs:
 
           R=/mnt/rootfs
           sudo mkdir -p "$R"
-          if ! sudo mount -o loop "$IMG" "$R"; then
-            echo "WARNING: gagal mount rootfs, step ini dilewati"
+
+          # Image ini full disk (ada tabel partisi: boot + root), jadi
+          # harus di-attach dengan scan partisi lalu cari partisi rootfs
+          LOOP=$(sudo losetup -fP --show "$IMG")
+          sudo partprobe "$LOOP" 2>/dev/null || true
+          sleep 2
+          lsblk -f "$LOOP" || true
+
+          MOUNTED=0
+          for P in "${LOOP}"p*; do
+            [ -e "$P" ] || continue
+            if sudo mount "$P" "$R" 2>/dev/null; then
+              if [ -f "$R/etc/os-release" ]; then
+                echo "rootfs ada di $P"
+                MOUNTED=1
+                break
+              fi
+              sudo umount "$R"
+            fi
+          done
+          if [ "$MOUNTED" != "1" ]; then
+            echo "WARNING: partisi rootfs tidak ketemu, step ini dilewati"
+            sudo losetup -d "$LOOP"
             exit 0
           fi
 
@@ -172,6 +193,7 @@ jobs:
 
           sudo sync
           sudo umount "$R"
+          sudo losetup -d "$LOOP"
 
       - name: Export hasil
         run: |
