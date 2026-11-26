@@ -205,60 +205,49 @@ jobs:
             DTB_FILES=$(sudo find "$R/boot" "$B" -type f -name '*xiaomi-rolex*.dtb' 2>/dev/null || true)
             echo "$DTB_FILES"
 
-            cat <<'PYEOF' > /tmp/patch_dts.py
+          cat <<'PYEOF' > /tmp/patch_dts.py
           import re, sys
 
           path, compat = sys.argv[1], sys.argv[2]
           with open(path, "r", encoding="utf-8", errors="ignore") as f:
               src = f.read()
-
           orig = src
 
-          def enable_touch_block(match):
-              block = match.group(0)
-              if re.search(r'touchscreen|goodix|ft5|edt|focaltech', block, re.I):
-                  block = re.sub(r'status\s*=\s*"disabled"\s*;', 'status = "okay";', block)
-                  block = re.sub(
-                      r'compatible\s*=\s*"[^"]*(goodix|ft5|edt|focaltech|melfas|synaptics)[^"]*"\s*;',
-                      f'compatible = "{compat}";',
-                      block,
-                      flags=re.I
-                  )
-              return block
+          pat = re.compile(r'((?:touchscreen|focaltech|ft5\w*|fts\w*)@[0-9a-fA-F]+\s*\{)([\s\S]*?\n\s*\};)')
 
-          src = re.sub(r'touchscreen[^{]*\{[\s\S]*?
-	*\};', enable_touch_block, src)
+          def fix(m):
+              body = m.group(2)
+              body = re.sub(r'status\s*=\s*"disabled"\s*;', 'status = "okay";', body)
+              body = re.sub(r'compatible\s*=\s*"[^"]*"\s*;', 'compatible = "%s";' % compat, body, count=1)
+              return m.group(1) + body
 
-          src = re.sub(
-              r'(touchscreen@[0-9a-fA-F]+\s*\{[\s\S]*?)status\s*=\s*"disabled"\s*;',
-              r'status = "okay";',
-              src
-          )
-          src = re.sub(
-              r'(touchscreen@[0-9a-fA-F]+\s*\{[\s\S]*?)compatible\s*=\s*"[^"]+"\s*;',
-              rf'compatible = "{compat}";',
-              src
-          )
-
-          if "touchscreen@" not in src and re.search(r'i2c@78b7000\s*\{', src):
-              touch_node = f'''
-          		touchscreen@38 {{
-          			compatible = "{compat}";
-          			reg = <0x38>;
-          			interrupt-parent = <&tlmm>;
-          			interrupts = <65 0x2008>;
-          			reset-gpios = <&tlmm 64 0x01>;
-          			status = "okay";
-          		}};
-          '''
-              src = re.sub(r'(i2c@78b7000\s*\{)', r'' + touch_node, src, count=1)
+          if pat.search(src):
+              src = pat.sub(fix, src)
+          else:
+              m_t = re.search(r'pinctrl@[0-9a-fA-F]+\s*\{[^}]*?phandle\s*=\s*<(0x[0-9a-fA-F]+)>', src)
+              m_i = re.search(r'i2c@78b7000\s*\{', src)
+              if m_t and m_i:
+                  tl = m_t.group(1)
+                  node = (
+                      '\n\t\ttouchscreen@38 {\n'
+                      '\t\t\tcompatible = "%s";\n'
+                      '\t\t\treg = <0x38>;\n'
+                      '\t\t\tinterrupt-parent = <%s>;\n'
+                      '\t\t\tinterrupts = <0x41 0x02>;\n'
+                      '\t\t\treset-gpios = <%s 0x40 0x01>;\n'
+                      '\t\t\tstatus = "okay";\n'
+                      '\t\t};\n'
+                  ) % (compat, tl, tl)
+                  src = src[:m_i.end()] + node + src[m_i.end():]
+              else:
+                  print("WARNING: tlmm / i2c@78b7000 tidak ketemu")
 
           if src != orig:
               with open(path, "w", encoding="utf-8") as f:
                   f.write(src)
               print("DTS berhasil dimodifikasi")
           else:
-              print("Tidak ada perubahan pola otomatis pada DTS ini")
+              print("Tidak ada perubahan pada DTS ini")
           PYEOF
 
             PATCHED_COUNT=0
@@ -312,28 +301,30 @@ jobs:
           if [ -n "$IN_SSID" ]; then
             CONN="$R/etc/NetworkManager/system-connections/auto-wifi.nmconnection"
             sudo mkdir -p "$R/etc/NetworkManager/system-connections"
-            printf '[connection]
-id=%s
-type=wifi
-autoconnect=true
+            sudo tee "$CONN" > /dev/null <<EOF
+          [connection]
+          id=$IN_SSID
+          type=wifi
+          autoconnect=true
 
-[wifi]
-mode=infrastructure
-ssid=%s
+          [wifi]
+          mode=infrastructure
+          ssid=$IN_SSID
 
-[wifi-security]
-key-mgmt=wpa-psk
-psk=%s
+          [wifi-security]
+          key-mgmt=wpa-psk
+          psk=$IN_WPASS
 
-[ipv4]
-method=auto
+          [ipv4]
+          method=auto
 
-[ipv6]
-method=auto
-'               "$IN_SSID" "$IN_SSID" "$IN_WPASS" | sudo tee "$CONN" > /dev/null
+          [ipv6]
+          method=auto
+          EOF
             sudo chmod 600 "$CONN"
             echo "WiFi auto-konek dipasang untuk SSID: $IN_SSID"
           fi
+
 
           echo "== cek hasil =="
           sudo ls -l "$R/etc/systemd/system/multi-user.target.wants/" 2>/dev/null | grep -i ssh || true
@@ -362,15 +353,15 @@ method=auto
           pmbootstrap export
           cp -L /tmp/postmarketOS-export/* out/ 2>/dev/null || true
 
-          sudo find "$HOME/.local/var/pmbootstrap" -type f             \( -name 'lk2nd*.img' -o -name 'lk2nd*.mbn' \) 2>/dev/null             | while read -r f; do
-                echo "lk2nd ketemu: $f"
-                sudo cp "$f" out/
-              done
+          sudo find "$HOME/.local/var/pmbootstrap" -type f \( -name 'lk2nd*.img' -o -name 'lk2nd*.mbn' \) 2>/dev/null | while read -r f; do
+            echo "lk2nd ketemu: $f"
+            sudo cp "$f" out/
+          done
 
-          sudo find "$HOME/.local/var/pmbootstrap/chroot_native/home/pmos/rootfs"             -maxdepth 1 -type f -name '*.img' 2>/dev/null             | while read -r f; do
-                echo "rootfs ketemu: $f"
-                sudo cp "$f" out/
-              done
+          sudo find "$HOME/.local/var/pmbootstrap/chroot_native/home/pmos/rootfs" -maxdepth 1 -type f -name '*.img' 2>/dev/null | while read -r f; do
+            echo "rootfs ketemu: $f"
+            sudo cp "$f" out/
+          done
 
           sudo chown -R "$USER":"$USER" out
           ls -lh out/
