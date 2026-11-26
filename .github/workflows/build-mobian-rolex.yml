@@ -167,10 +167,16 @@ jobs:
           printf '%s:%s\n' root "$IN_PASS" | sudo chroot "$R" chpasswd
 
           # Kernel + modul + firmware dari pmOS
-          MODROOT=$(find kernel -type d -name modules \( -path '*/usr/lib/*' -o -path '*/lib/*' \) | head -1)
-          KVER=$(ls "$MODROOT" | head -1)
+          # Cari dir modul kernel asli (lib/modules/<versi>), bukan gio/modules dll
+          KDIR=$(find kernel -type d -path '*/lib/modules/[0-9]*' -prune | sort | head -1)
+          if [ -z "$KDIR" ]; then
+            echo "::error::modul kernel tidak ketemu (paket kernel pmOS tidak terpasang?)"
+            find kernel -maxdepth 5 -type d \( -name modules -o -name 'linux-*' -o -name dtbs \) | head -30
+            ls kernel/boot 2>/dev/null
+            exit 1
+          fi
+          MODROOT=$(dirname "$KDIR"); KVER=$(basename "$KDIR")
           echo "KVER=$KVER (dari $MODROOT)"
-          [ -n "$KVER" ] || { echo "::error::modul kernel tidak ketemu"; exit 1; }
           sudo mkdir -p "$R/usr/lib/modules"
           sudo cp -a "$MODROOT/$KVER" "$R/usr/lib/modules/"
           FW=$(find kernel -maxdepth 4 -type d -name firmware \( -path '*/usr/lib/*' -o -path '*/lib/*' \) | head -1)
