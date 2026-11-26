@@ -201,10 +201,8 @@ jobs:
           fi
 
           if [ "$IN_PATCH_DTB" = "true" ]; then
-            echo "== Cari file DTB untuk patch touchscreen =="
-            DTB_FILES=$(sudo find "$R/boot" "$B" -type f -name '*.dtb' 2>/dev/null \
-              | grep -iE 'msm8917|rolex|msm8937|msm8953|qcom' || true)
-            [ -z "$DTB_FILES" ] && DTB_FILES=$(sudo find "$R/boot" "$B" -type f -name '*.dtb' 2>/dev/null || true)
+            echo "== Cari file DTB rolex untuk patch touchscreen =="
+            DTB_FILES=$(sudo find "$R/boot" "$B" -type f -name '*xiaomi-rolex*.dtb' 2>/dev/null || true)
             echo "$DTB_FILES"
 
             cat <<'PYEOF' > /tmp/patch_dts.py
@@ -228,31 +226,32 @@ jobs:
                   )
               return block
 
-          src = re.sub(r'touchscreen[^{]*\{[\s\S]*?\n\t*\};', enable_touch_block, src)
+          src = re.sub(r'touchscreen[^{]*\{[\s\S]*?
+	*\};', enable_touch_block, src)
 
           src = re.sub(
               r'(touchscreen@[0-9a-fA-F]+\s*\{[\s\S]*?)status\s*=\s*"disabled"\s*;',
-              r'\1status = "okay";',
+              r'status = "okay";',
               src
           )
           src = re.sub(
               r'(touchscreen@[0-9a-fA-F]+\s*\{[\s\S]*?)compatible\s*=\s*"[^"]+"\s*;',
-              rf'\1compatible = "{compat}";',
+              rf'compatible = "{compat}";',
               src
           )
 
           if "touchscreen@" not in src and re.search(r'i2c@78b7000\s*\{', src):
               touch_node = f'''
-          \t\ttouchscreen@38 {{
-          \t\t\tcompatible = "{compat}";
-          \t\t\treg = <0x38>;
-          \t\t\tinterrupt-parent = <&tlmm>;
-          \t\t\tinterrupts = <65 0x2008>;
-          \t\t\treset-gpios = <&tlmm 64 0x01>;
-          \t\t\tstatus = "okay";
-          \t\t}};
+          		touchscreen@38 {{
+          			compatible = "{compat}";
+          			reg = <0x38>;
+          			interrupt-parent = <&tlmm>;
+          			interrupts = <65 0x2008>;
+          			reset-gpios = <&tlmm 64 0x01>;
+          			status = "okay";
+          		}};
           '''
-              src = re.sub(r'(i2c@78b7000\s*\{)', r'\1' + touch_node, src, count=1)
+              src = re.sub(r'(i2c@78b7000\s*\{)', r'' + touch_node, src, count=1)
 
           if src != orig:
               with open(path, "w", encoding="utf-8") as f:
@@ -269,7 +268,7 @@ jobs:
               DTB_TMP="/tmp/target_patched.dtb"
               sudo rm -f "$DTS_TMP" "$DTB_TMP"
 
-              if ! sudo dtc -I dtb -O dts -o "$DTS_TMP" "$DTB" 2>/dev/null; then
+              if ! dtc -I dtb -O dts -o "$DTS_TMP" "$DTB" 2>/dev/null; then
                 continue
               fi
 
@@ -278,7 +277,7 @@ jobs:
                 sudo cp "$DTB" "${DTB}.bak"
                 python3 /tmp/patch_dts.py "$DTS_TMP" "$IN_TOUCH_COMPAT"
 
-                if sudo dtc -I dts -O dtb -o "$DTB_TMP" "$DTS_TMP" 2>/dev/null; then
+                if dtc -I dts -O dtb -o "$DTB_TMP" "$DTS_TMP" 2>/dev/null; then
                   sudo cp "$DTB_TMP" "$DTB"
                   PATCHED_COUNT=$((PATCHED_COUNT + 1))
                   echo "OK: DTB ter-compile ulang -> $DTB"
@@ -313,8 +312,25 @@ jobs:
           if [ -n "$IN_SSID" ]; then
             CONN="$R/etc/NetworkManager/system-connections/auto-wifi.nmconnection"
             sudo mkdir -p "$R/etc/NetworkManager/system-connections"
-            printf '[connection]\nid=%s\ntype=wifi\nautoconnect=true\n\n[wifi]\nmode=infrastructure\nssid=%s\n\n[wifi-security]\nkey-mgmt=wpa-psk\npsk=%s\n\n[ipv4]\nmethod=auto\n\n[ipv6]\nmethod=auto\n' \
-              "$IN_SSID" "$IN_SSID" "$IN_WPASS" | sudo tee "$CONN" > /dev/null
+            printf '[connection]
+id=%s
+type=wifi
+autoconnect=true
+
+[wifi]
+mode=infrastructure
+ssid=%s
+
+[wifi-security]
+key-mgmt=wpa-psk
+psk=%s
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=auto
+'               "$IN_SSID" "$IN_SSID" "$IN_WPASS" | sudo tee "$CONN" > /dev/null
             sudo chmod 600 "$CONN"
             echo "WiFi auto-konek dipasang untuk SSID: $IN_SSID"
           fi
@@ -346,16 +362,12 @@ jobs:
           pmbootstrap export
           cp -L /tmp/postmarketOS-export/* out/ 2>/dev/null || true
 
-          sudo find "$HOME/.local/var/pmbootstrap" -type f \
-            \( -name 'lk2nd*.img' -o -name 'lk2nd*.mbn' \) 2>/dev/null \
-            | while read -r f; do
+          sudo find "$HOME/.local/var/pmbootstrap" -type f             \( -name 'lk2nd*.img' -o -name 'lk2nd*.mbn' \) 2>/dev/null             | while read -r f; do
                 echo "lk2nd ketemu: $f"
                 sudo cp "$f" out/
               done
 
-          sudo find "$HOME/.local/var/pmbootstrap/chroot_native/home/pmos/rootfs" \
-            -maxdepth 1 -type f -name '*.img' 2>/dev/null \
-            | while read -r f; do
+          sudo find "$HOME/.local/var/pmbootstrap/chroot_native/home/pmos/rootfs"             -maxdepth 1 -type f -name '*.img' 2>/dev/null             | while read -r f; do
                 echo "rootfs ketemu: $f"
                 sudo cp "$f" out/
               done
