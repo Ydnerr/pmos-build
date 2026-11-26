@@ -63,9 +63,16 @@ jobs:
           [ "$IN_CHANNEL" = "edge" ] && BRANCH="main"
           WORK="$HOME/.local/var/pmbootstrap"
           mkdir -p "$WORK/cache_git"
-          git clone --single-branch --branch "$BRANCH" \
-            https://gitlab.postmarketos.org/postmarketOS/pmaports.git \
-            "$WORK/cache_git/pmaports"
+          PM="$WORK/cache_git/pmaports"
+          # Clone semua branch: pmbootstrap selalu membaca channels.cfg dari origin/main
+          git clone https://gitlab.postmarketos.org/postmarketOS/pmaports.git "$PM"
+          git -C "$PM" fetch origin main
+          if [ "$BRANCH" != "main" ]; then
+            git -C "$PM" checkout -B "$BRANCH" "origin/$BRANCH"
+          fi
+          echo "== branch =="; git -C "$PM" branch -a | head -20
+          echo "== channels.cfg (origin/main) =="
+          git -C "$PM" show origin/main:channels.cfg | head -30
 
           # Work folder dibuat manual, jadi tandai versinya supaya tidak diminta migrasi
           WV=$(grep -rhoE 'work_version *= *[0-9]+' "$HOME/pmbootstrap/pmb" 2>/dev/null | head -1 | grep -oE '[0-9]+$' || true)
