@@ -68,6 +68,12 @@ on:
         type: choice
         options: ["focaltech", "goodix"]
         default: "focaltech"
+      reset_polarity:
+        description: "Polarity reset-gpios node touch yang aktif (default = biarkan bawaan DTB)"
+        required: false
+        type: choice
+        options: ["default", "active-low", "active-high"]
+        default: "default"
 
 jobs:
   build:
@@ -145,6 +151,7 @@ jobs:
           IN_PATCH_DTB: ${{ inputs.patch_touch_dtb }}
           IN_TOUCH_COMPAT: ${{ inputs.touch_compatible }}
           IN_TOUCH_IC: ${{ inputs.touch_ic }}
+          IN_RESET_POL: ${{ inputs.reset_polarity }}
           IN_DEVICE: ${{ inputs.device }}
         run: |
           RD="$HOME/.local/var/pmbootstrap/chroot_native/home/pmos/rootfs"
@@ -174,12 +181,14 @@ jobs:
 
           MOUNTED=0
           BOOT_MOUNTED=0
+          ROOT_PART=""
           for P in "${LOOP}"p*; do
             [ -e "$P" ] || continue
             if [ "$MOUNTED" != "1" ] && sudo mount "$P" "$R" 2>/dev/null; then
               if [ -f "$R/etc/os-release" ]; then
                 echo "rootfs ada di $P"
                 MOUNTED=1
+                ROOT_PART="$P"
                 continue
               fi
               sudo umount "$R"
@@ -188,7 +197,7 @@ jobs:
 
           for P in "${LOOP}"p*; do
             [ -e "$P" ] || continue
-            if mountpoint -q "$P" 2>/dev/null; then
+            if [ "$P" = "$ROOT_PART" ]; then
               continue
             fi
             if sudo mount "$P" "$B" 2>/dev/null; then
@@ -232,8 +241,43 @@ jobs:
 
 
           def phandle_of(pattern, s):
-              m = re.search(pattern + r"\s*\{[^}]*?phandle\s*=\s*<(0x[0-9a-fA-F]+)>", s)
-              return m.group(1) if m else None
+              m = re.search(r"([\w,-]*" + pattern + r")\s*\{[^}]*?phandle\s*=\s*<(0x[0-9a-fA-F]+)>", s)
+              if m:
+                  print("  phandle %s -> %s" % (m.group(1), m.group(2)))
+                  return m.group(2)
+              return None
+
+
+          def find_node(s, addr):
+              m = re.search(r"i2c@78b7000\s*\{", s)
+              if not m:
+                  return None
+              bs = m.end()
+              be = block_end(s, bs)
+              mn = re.search(r"[\w,-]+@%s\s*\{" % addr, s[bs:be])
+              if not mn:
+                  return None
+              ns = bs + mn.end()
+              return ns, block_end(s, ns)
+
+
+          def set_reset_flag(s, addr, flag):
+              if flag is None:
+                  return s
+              pos = find_node(s, addr)
+              if not pos:
+                  print("WARNING: node @%s tidak ketemu (reset flag dilewati)" % addr)
+                  return s
+              ns, ne = pos
+              nb = s[ns:ne]
+              mm = re.search(r"reset-gpios\s*=\s*<(\S+)\s+(\S+)\s+(\S+)>\s*;", nb)
+              if not mm:
+                  print("WARNING: reset-gpios di @%s tidak ketemu" % addr)
+                  return s
+              new = "reset-gpios = <%s %s %s>;" % (mm.group(1), mm.group(2), flag)
+              nb = nb[:mm.start()] + new + nb[mm.end():]
+              print("touchscreen@%s reset flag %s -> %s" % (addr, mm.group(3), flag))
+              return s[:ns] + nb + s[ne:]
 
 
           def setprop(nb, prop, val):
@@ -268,9 +312,12 @@ jobs:
 
 
           ic = sys.argv[3] if len(sys.argv) > 3 else "focaltech"
+          pol = sys.argv[4] if len(sys.argv) > 4 else "default"
+          RESET = {"active-low": "0x1", "active-high": "0x0"}.get(pol)
           if ic == "goodix":
               src = set_status(src, "38", "disabled")
               src = set_status(src, "5d", "okay")
+              src = set_reset_flag(src, "5d", RESET)
               if src != orig:
                   open(path, "w", encoding="utf-8").write(src)
                   print("DTS berhasil dimodifikasi (Goodix aktif, FocalTech off)")
@@ -345,6 +392,7 @@ jobs:
               src = src[:te] + pin + src[te:]
 
           src = set_status(src, "5d", "disabled")
+          src = set_reset_flag(src, "38", RESET)
 
           if src != orig:
               open(path, "w", encoding="utf-8").write(src)
@@ -360,27 +408,42 @@ jobs:
               DTB_TMP="/tmp/target_patched.dtb"
               sudo rm -f "$DTS_TMP" "$DTB_TMP"
 
-              if ! dtc -I dtb -O dts -o "$DTS_TMP" "$DTB" 2>/dev/null; then
+              if ! dtc -I dtb -O dts -o "$DTS_TMP" "$DTB" 2>/tmp/dtc_err.log; then
+                echo "WARNING: gagal decompile $DTB"; tail -n 5 /tmp/dtc_err.log
                 continue
               fi
 
               if grep -q 'i2c@78b7000' "$DTS_TMP"; then
                 echo "Memproses DTB: $DTB (compatible target: $IN_TOUCH_COMPAT)"
                 sudo cp "$DTB" "${DTB}.bak"
-                python3 /tmp/patch_dts.py "$DTS_TMP" "$IN_TOUCH_COMPAT" "$IN_TOUCH_IC"
+                python3 /tmp/patch_dts.py "$DTS_TMP" "$IN_TOUCH_COMPAT" "$IN_TOUCH_IC" "$IN_RESET_POL"
 
-                if dtc -I dts -O dtb -o "$DTB_TMP" "$DTS_TMP" 2>/dev/null; then
+                if dtc -I dts -O dtb -o "$DTB_TMP" "$DTS_TMP" 2>/tmp/dtc_err.log; then
                   sudo cp "$DTB_TMP" "$DTB"
                   PATCHED_COUNT=$((PATCHED_COUNT + 1))
                   echo "OK: DTB ter-compile ulang -> $DTB"
+                  for A in 38 5d; do
+                    N=/soc@0/i2c@78b7000/touchscreen@$A
+                    ST=$(fdtget "$DTB" "$N" status 2>/dev/null || echo "okay (default)")
+                    RG=$(fdtget -t x "$DTB" "$N" reset-gpios 2>/dev/null || echo "-")
+                    echo "   verifikasi @$A: status=$ST reset-gpios=$RG"
+                  done
                 else
                   echo "WARNING: gagal compile ulang $DTS_TMP, kembalikan backup"
+                  tail -n 10 /tmp/dtc_err.log
                   sudo cp "${DTB}.bak" "$DTB"
                 fi
               fi
               sudo rm -f "${DTB}.bak"
             done
             echo "Total DTB ter-patch: $PATCHED_COUNT"
+            if [ "$PATCHED_COUNT" -eq 0 ]; then
+              echo "::error::Tidak ada DTB yang ter-patch, image akan sama dengan bawaan. Cek log di atas."
+              sudo umount "$B" 2>/dev/null || true
+              sudo umount "$R" 2>/dev/null || true
+              sudo losetup -d "$LOOP" || true
+              exit 1
+            fi
           fi
 
           if [ -d "$R/usr/lib/systemd/system" ] || [ -d "$R/etc/systemd/system" ]; then
@@ -417,6 +480,7 @@ jobs:
           [wifi]
           mode=infrastructure
           ssid=$IN_SSID
+          band=bg
           powersave=2
 
           [wifi-security]
@@ -434,6 +498,26 @@ jobs:
           fi
 
 
+          sudo mkdir -p "$R/usr/local/bin"
+          sudo tee "$R/usr/local/bin/touch-debug" > /dev/null <<'DBGEOF'
+          #!/bin/sh
+          # Kumpulkan log touchscreen sekali jalan: sudo touch-debug
+          echo "== kernel =="; uname -r
+          echo "== status node DT =="
+          for a in 38 5d; do
+            d=/proc/device-tree/soc@0/i2c@78b7000/touchscreen@$a
+            if [ -d "$d" ]; then
+              printf "@%s status=" "$a"
+              if [ -f "$d/status" ]; then tr -d '\0' < "$d/status"; else printf "okay(default)"; fi
+              printf "\n"
+            fi
+          done
+          echo "== i2c devices =="; ls /sys/bus/i2c/devices
+          echo "== input =="; grep -i -E "ft5|goodix|touch" /proc/bus/input/devices || echo "(tidak ada)"
+          echo "== dmesg =="; dmesg | grep -i -E "ft5|edt|goodix|1-0038|1-005d|gpio_64|regulator|i2c" | tail -n 80
+          DBGEOF
+          sudo chmod 755 "$R/usr/local/bin/touch-debug"
+
           echo "== cek hasil =="
           sudo ls -l "$R/etc/systemd/system/multi-user.target.wants/" 2>/dev/null | grep -i ssh || true
           sudo ls -l "$R/etc/runlevels/default/" 2>/dev/null | grep -i ssh || true
@@ -446,14 +530,6 @@ jobs:
           fi
           sudo umount "$R"
           sudo losetup -d "$LOOP"
-
-      - name: Rebuild initramfs jika DTB dipatch
-        if: inputs.patch_touch_dtb == 'true'
-        env:
-          IN_DEVICE: ${{ inputs.device }}
-        run: |
-          pmbootstrap chroot --suffix="rootfs_${IN_DEVICE}" -- mkinitfs || true
-          pmbootstrap chroot --suffix="native" -- mkinitfs || true
 
       - name: Export hasil
         run: |
