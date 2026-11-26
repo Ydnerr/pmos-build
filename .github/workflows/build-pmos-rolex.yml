@@ -1,0 +1,124 @@
+name: Build postmarketOS rolex
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "Channel pmaports (edge = master)"
+        required: false
+        type: choice
+        options: ["edge", "v26.06"]
+        default: "edge"
+      device:
+        description: "Device pmbootstrap (generic msm89x7, dipakai rolex)"
+        required: false
+        type: string
+        default: "qcom-msm89x7"
+      ui:
+        description: "Tampilan (RAM 2 GB: pilih yang ringan)"
+        required: false
+        type: choice
+        options: ["xfce4", "sxmo-de-sway", "phosh", "plasma-mobile", "none"]
+        default: "xfce4"
+      username:
+        description: "Username"
+        required: false
+        type: string
+        default: "user"
+      password:
+        description: "Password awal (terlihat di UI Actions, ganti dengan passwd setelah boot)"
+        required: false
+        type: string
+        default: "147147"
+      hostname:
+        description: "Hostname"
+        required: false
+        type: string
+        default: "rolex"
+      extra_packages:
+        description: "Paket tambahan, pisah koma (contoh: openssh,nano,iwd)"
+        required: false
+        type: string
+        default: "nano"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Install dependensi
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git openssl
+          git clone --depth=1 https://gitlab.postmarketos.org/postmarketOS/pmbootstrap.git "$HOME/pmbootstrap"
+          mkdir -p "$HOME/.local/bin"
+          ln -sf "$HOME/pmbootstrap/pmbootstrap.py" "$HOME/.local/bin/pmbootstrap"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Clone pmaports
+        env:
+          IN_CHANNEL: ${{ inputs.channel }}
+        run: |
+          BRANCH="$IN_CHANNEL"
+          [ "$IN_CHANNEL" = "edge" ] && BRANCH="master"
+          WORK="$HOME/.local/var/pmbootstrap"
+          mkdir -p "$WORK/cache_git"
+          git clone --single-branch --branch "$BRANCH" \
+            https://gitlab.postmarketos.org/postmarketOS/pmaports.git \
+            "$WORK/cache_git/pmaports"
+          pmbootstrap --version
+
+      - name: Konfigurasi pmbootstrap
+        env:
+          IN_DEVICE: ${{ inputs.device }}
+          IN_UI: ${{ inputs.ui }}
+          IN_USER: ${{ inputs.username }}
+          IN_HOST: ${{ inputs.hostname }}
+          IN_EXTRA: ${{ inputs.extra_packages }}
+        run: |
+          pmbootstrap config device "$IN_DEVICE"
+          pmbootstrap config ui "$IN_UI"
+          pmbootstrap config user "$IN_USER"
+          pmbootstrap config hostname "$IN_HOST"
+          pmbootstrap config extra_packages "$IN_EXTRA"
+          pmbootstrap config nonfree_firmware True
+          pmbootstrap config
+
+      - name: Build image (pmbootstrap install)
+        env:
+          IN_PASS: ${{ inputs.password }}
+        run: |
+          pmbootstrap -y install --password "$IN_PASS"
+
+      - name: Export hasil
+        run: |
+          mkdir -p out
+          pmbootstrap export
+          cp -L /tmp/postmarketOS-export/* out/ 2>/dev/null || true
+
+          # Cari image lk2nd (wajib untuk msm89x7) di semua chroot
+          sudo find "$HOME/.local/var/pmbootstrap" -type f \
+            \( -name 'lk2nd*.img' -o -name 'lk2nd*.mbn' \) 2>/dev/null \
+            | while read -r f; do
+                echo "lk2nd ketemu: $f"
+                sudo cp "$f" out/
+              done
+
+          # Image rootfs hasil install
+          sudo find "$HOME/.local/var/pmbootstrap/chroot_native/home/pmos/rootfs" \
+            -maxdepth 1 -type f -name '*.img' 2>/dev/null \
+            | while read -r f; do
+                echo "rootfs ketemu: $f"
+                sudo cp "$f" out/
+              done
+
+          sudo chown -R "$USER":"$USER" out
+          ls -lh out/
+
+      - name: Upload hasil
+        uses: actions/upload-artifact@v4
+        with:
+          name: pmos-rolex
+          path: out/
+          compression-level: 6
+          if-no-files-found: error
