@@ -97,8 +97,18 @@ jobs:
         run: |
           mkdir -p kernel
           docker run --rm -e CH="$IN_CH" -v "$PWD/kernel:/out" alpine:edge sh -ec '
-            PM="https://mirror.postmarketos.org/postmarketos/$CH"
             AL="https://dl-cdn.alpinelinux.org/alpine/edge"
+            # postmarketOS direname jadi Nura: mirror pindah ke mirror.nura.eco
+            if [ "$CH" = edge ]; then CS="edge master"; else CS="$CH"; fi
+            PM=""
+            for B in https://mirror.nura.eco/postmarketos https://mirror.postmarketos.org/postmarketos; do
+              for C in $CS; do
+                if wget -q -O /dev/null "$B/$C/aarch64/APKINDEX.tar.gz"; then PM="$B/$C"; break 2; fi
+                echo "tidak ada: $B/$C/aarch64/APKINDEX.tar.gz"
+              done
+            done
+            [ -n "$PM" ] || { echo "::error::APKINDEX pmOS/Nura tidak ketemu di semua mirror"; exit 1; }
+            echo "Pakai mirror: $PM"
             mkdir -p /out/etc/apk
             run() { apk --arch aarch64 --allow-untrusted --no-scripts --no-cache --root /out --initdb \
                       -X "$PM" -X "$AL/main" -X "$AL/community" "$@"; }
