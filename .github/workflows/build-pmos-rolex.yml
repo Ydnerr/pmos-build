@@ -358,6 +358,10 @@ jobs:
             sudo ln -sf /etc/init.d/sshd "$R/etc/runlevels/default/sshd"
           fi
 
+          sudo mkdir -p "$R/etc/NetworkManager/conf.d"
+          printf '[connection]\nwifi.powersave = 2\n' | sudo tee "$R/etc/NetworkManager/conf.d/wifi-powersave.conf" > /dev/null
+          echo "OK: WiFi power save dimatikan (NetworkManager conf.d)"
+
           if [ -n "$IN_SSID" ]; then
             CONN="$R/etc/NetworkManager/system-connections/auto-wifi.nmconnection"
             sudo mkdir -p "$R/etc/NetworkManager/system-connections"
@@ -370,6 +374,7 @@ jobs:
           [wifi]
           mode=infrastructure
           ssid=$IN_SSID
+          powersave=2
 
           [wifi-security]
           key-mgmt=wpa-psk
