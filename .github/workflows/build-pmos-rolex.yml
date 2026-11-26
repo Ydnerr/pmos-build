@@ -62,6 +62,12 @@ on:
         type: choice
         options: ["focaltech,ft5426", "edt,edt-ft5506", "edt,edt-ft5406", "edt,edt-ft5306"]
         default: "focaltech,ft5426"
+      touch_ic:
+        description: "IC touch yang DIPAKAI (node satunya di-disable biar GPIO_64 tidak rebutan)"
+        required: false
+        type: choice
+        options: ["focaltech", "goodix"]
+        default: "focaltech"
 
 jobs:
   build:
@@ -138,6 +144,7 @@ jobs:
           IN_WPASS: ${{ inputs.wifi_pass }}
           IN_PATCH_DTB: ${{ inputs.patch_touch_dtb }}
           IN_TOUCH_COMPAT: ${{ inputs.touch_compatible }}
+          IN_TOUCH_IC: ${{ inputs.touch_ic }}
           IN_DEVICE: ${{ inputs.device }}
         run: |
           RD="$HOME/.local/var/pmbootstrap/chroot_native/home/pmos/rootfs"
@@ -237,6 +244,40 @@ jobs:
               return "\n\t\t\t" + line + nb
 
 
+          def set_status(s, addr, status):
+              m = re.search(r"i2c@78b7000\s*\{", s)
+              if not m:
+                  print("WARNING: i2c@78b7000 tidak ketemu")
+                  return s
+              bs = m.end()
+              be = block_end(s, bs)
+              mn = re.search(r"[\w,-]+@%s\s*\{" % addr, s[bs:be])
+              if not mn:
+                  print("WARNING: node @%s tidak ketemu" % addr)
+                  return s
+              ns = bs + mn.end()
+              ne = block_end(s, ns)
+              nb = s[ns:ne]
+              pat = r'status\s*=\s*"[^"]*"\s*;'
+              if re.search(pat, nb):
+                  nb = re.sub(pat, 'status = "%s";' % status, nb, count=1)
+              else:
+                  nb = '\n\t\t\tstatus = "%s";' % status + nb
+              print("touchscreen@%s -> %s" % (addr, status))
+              return s[:ns] + nb + s[ne:]
+
+
+          ic = sys.argv[3] if len(sys.argv) > 3 else "focaltech"
+          if ic == "goodix":
+              src = set_status(src, "38", "disabled")
+              src = set_status(src, "5d", "okay")
+              if src != orig:
+                  open(path, "w", encoding="utf-8").write(src)
+                  print("DTS berhasil dimodifikasi (Goodix aktif, FocalTech off)")
+              else:
+                  print("Tidak ada perubahan pada DTS ini")
+              sys.exit(0)
+
           m_i2c = re.search(r"i2c@78b7000\s*\{", src)
           if not m_i2c:
               print("WARNING: i2c@78b7000 tidak ketemu")
@@ -303,6 +344,8 @@ jobs:
                      '\t\t};\n') % pin_ph
               src = src[:te] + pin + src[te:]
 
+          src = set_status(src, "5d", "disabled")
+
           if src != orig:
               open(path, "w", encoding="utf-8").write(src)
               print("DTS berhasil dimodifikasi")
@@ -324,7 +367,7 @@ jobs:
               if grep -q 'i2c@78b7000' "$DTS_TMP"; then
                 echo "Memproses DTB: $DTB (compatible target: $IN_TOUCH_COMPAT)"
                 sudo cp "$DTB" "${DTB}.bak"
-                python3 /tmp/patch_dts.py "$DTS_TMP" "$IN_TOUCH_COMPAT"
+                python3 /tmp/patch_dts.py "$DTS_TMP" "$IN_TOUCH_COMPAT" "$IN_TOUCH_IC"
 
                 if dtc -I dts -O dtb -o "$DTB_TMP" "$DTS_TMP" 2>/dev/null; then
                   sudo cp "$DTB_TMP" "$DTB"
