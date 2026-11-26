@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       channel:
-        description: "Channel pmaports (edge = master)"
+        description: "Channel pmaports (edge = main)"
         required: false
         type: choice
         options: ["edge", "v26.06"]
@@ -60,7 +60,7 @@ jobs:
           IN_CHANNEL: ${{ inputs.channel }}
         run: |
           BRANCH="$IN_CHANNEL"
-          [ "$IN_CHANNEL" = "edge" ] && BRANCH="master"
+          [ "$IN_CHANNEL" = "edge" ] && BRANCH="main"
           WORK="$HOME/.local/var/pmbootstrap"
           mkdir -p "$WORK/cache_git"
           git clone --single-branch --branch "$BRANCH" \
@@ -83,7 +83,7 @@ jobs:
           [pmbootstrap]
           device = $IN_DEVICE
           ui = $IN_UI
-          user = $IN_USER
+          user = ${IN_USER:-user}
           hostname = $IN_HOST
           extra_packages = $IN_EXTRA
           nonfree_firmware = True
@@ -97,7 +97,7 @@ jobs:
         env:
           IN_PASS: ${{ inputs.password }}
         run: |
-          pmbootstrap --timeout 3600 -y install --password "$IN_PASS"
+          pmbootstrap --timeout 3600 -y install --password "${IN_PASS:-147147}"
 
       - name: Export hasil
         run: |
