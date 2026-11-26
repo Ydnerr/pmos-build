@@ -229,6 +229,14 @@ jobs:
               return m.group(1) if m else None
 
 
+          def setprop(nb, prop, val):
+              pat = r"\b%s\s*=\s*<[^>]*>\s*;" % re.escape(prop)
+              line = "%s = <%s>;" % (prop, val)
+              if re.search(pat, nb):
+                  return re.sub(pat, line, nb, count=1)
+              return "\n\t\t\t" + line + nb
+
+
           m_i2c = re.search(r"i2c@78b7000\s*\{", src)
           if not m_i2c:
               print("WARNING: i2c@78b7000 tidak ketemu")
@@ -239,20 +247,27 @@ jobs:
           body = src[start:end]
           m38 = re.search(r"[\w,-]+@38\s*\{", body)
 
+          tlmm = phandle_of(r"pinctrl@1000000", src)
+          l10 = phandle_of(r"[\w,-]*l10", src)
+          l5 = phandle_of(r"[\w,-]*l5", src)
+          print("regulator l10=%s l5=%s tlmm=%s" % (l10, l5, tlmm))
+
           if m38:
               s2 = start + m38.end()
               e2 = block_end(src, s2)
               nb = src[s2:e2]
+              print("NODE LAMA touchscreen@38: {" + nb + "}")
+              if l10:
+                  nb = setprop(nb, "vcc-supply", l10)
+              if l5:
+                  nb = setprop(nb, "iovcc-supply", l5)
               nb = re.sub(r'status\s*=\s*"disabled"\s*;', 'status = "okay";', nb)
               nb = re.sub(r'compatible\s*=\s*"[^"]*"\s*;', 'compatible = "%s";' % compat, nb, count=1)
               src = src[:s2] + nb + src[e2:]
           else:
-              tlmm = phandle_of(r"pinctrl@1000000", src)
               if not tlmm:
                   print("WARNING: tlmm (pinctrl@1000000) tidak ketemu")
                   sys.exit(0)
-              l10 = phandle_of(r"\bl10", src)
-              l5 = phandle_of(r"\bl5", src)
               used = [int(x, 16) for x in re.findall(r"phandle\s*=\s*<(0x[0-9a-fA-F]+)>", src)]
               pin_ph = "0x%x" % (max(used) + 1)
 
@@ -271,7 +286,6 @@ jobs:
               if l5:
                   node.append('\t\t\tiovcc-supply = <%s>;' % l5)
               node += ['\t\t\tstatus = "okay";', '\t\t};\n']
-              print("regulator l10=%s l5=%s tlmm=%s" % (l10, l5, tlmm))
 
               head_end = body.find("{")
               head = body if head_end < 0 else body[:head_end]
