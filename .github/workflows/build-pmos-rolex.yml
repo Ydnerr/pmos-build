@@ -60,8 +60,8 @@ on:
         description: "Compatible string touchscreen FocalTech di DTS"
         required: false
         type: choice
-        options: ["edt,edt-ft5406", "edt,edt-ft5306", "focaltech,fts"]
-        default: "edt,edt-ft5406"
+        options: ["focaltech,ft5426", "edt,edt-ft5506", "edt,edt-ft5406", "edt,edt-ft5306"]
+        default: "focaltech,ft5426"
 
 jobs:
   build:
@@ -209,42 +209,88 @@ jobs:
           import re, sys
 
           path, compat = sys.argv[1], sys.argv[2]
-          with open(path, "r", encoding="utf-8", errors="ignore") as f:
-              src = f.read()
+          src = open(path, encoding="utf-8", errors="ignore").read()
           orig = src
 
-          pat = re.compile(r'((?:touchscreen|focaltech|ft5\w*|fts\w*)@[0-9a-fA-F]+\s*\{)([\s\S]*?\n\s*\};)')
 
-          def fix(m):
-              body = m.group(2)
-              body = re.sub(r'status\s*=\s*"disabled"\s*;', 'status = "okay";', body)
-              body = re.sub(r'compatible\s*=\s*"[^"]*"\s*;', 'compatible = "%s";' % compat, body, count=1)
-              return m.group(1) + body
+          def block_end(s, i):
+              depth = 1
+              while i < len(s) and depth:
+                  if s[i] == "{":
+                      depth += 1
+                  elif s[i] == "}":
+                      depth -= 1
+                  i += 1
+              return i - 1
 
-          if pat.search(src):
-              src = pat.sub(fix, src)
+
+          def phandle_of(pattern, s):
+              m = re.search(pattern + r"\s*\{[^}]*?phandle\s*=\s*<(0x[0-9a-fA-F]+)>", s)
+              return m.group(1) if m else None
+
+
+          m_i2c = re.search(r"i2c@78b7000\s*\{", src)
+          if not m_i2c:
+              print("WARNING: i2c@78b7000 tidak ketemu")
+              sys.exit(0)
+
+          start = m_i2c.end()
+          end = block_end(src, start)
+          body = src[start:end]
+          m38 = re.search(r"[\w,-]+@38\s*\{", body)
+
+          if m38:
+              s2 = start + m38.end()
+              e2 = block_end(src, s2)
+              nb = src[s2:e2]
+              nb = re.sub(r'status\s*=\s*"disabled"\s*;', 'status = "okay";', nb)
+              nb = re.sub(r'compatible\s*=\s*"[^"]*"\s*;', 'compatible = "%s";' % compat, nb, count=1)
+              src = src[:s2] + nb + src[e2:]
           else:
-              m_t = re.search(r'pinctrl@[0-9a-fA-F]+\s*\{[^}]*?phandle\s*=\s*<(0x[0-9a-fA-F]+)>', src)
-              m_i = re.search(r'i2c@78b7000\s*\{', src)
-              if m_t and m_i:
-                  tl = m_t.group(1)
-                  node = (
-                      '\n\t\ttouchscreen@38 {\n'
-                      '\t\t\tcompatible = "%s";\n'
-                      '\t\t\treg = <0x38>;\n'
-                      '\t\t\tinterrupt-parent = <%s>;\n'
-                      '\t\t\tinterrupts = <0x41 0x02>;\n'
-                      '\t\t\treset-gpios = <%s 0x40 0x01>;\n'
-                      '\t\t\tstatus = "okay";\n'
-                      '\t\t};\n'
-                  ) % (compat, tl, tl)
-                  src = src[:m_i.end()] + node + src[m_i.end():]
-              else:
-                  print("WARNING: tlmm / i2c@78b7000 tidak ketemu")
+              tlmm = phandle_of(r"pinctrl@1000000", src)
+              if not tlmm:
+                  print("WARNING: tlmm (pinctrl@1000000) tidak ketemu")
+                  sys.exit(0)
+              l10 = phandle_of(r"\bl10", src)
+              l5 = phandle_of(r"\bl5", src)
+              used = [int(x, 16) for x in re.findall(r"phandle\s*=\s*<(0x[0-9a-fA-F]+)>", src)]
+              pin_ph = "0x%x" % (max(used) + 1)
+
+              node = ['\n\t\ttouchscreen@38 {',
+                      '\t\t\tcompatible = "%s";' % compat,
+                      '\t\t\treg = <0x38>;',
+                      '\t\t\tinterrupt-parent = <%s>;' % tlmm,
+                      '\t\t\tinterrupts = <0x41 0x02>;',
+                      '\t\t\treset-gpios = <%s 0x40 0x01>;' % tlmm,
+                      '\t\t\ttouchscreen-size-x = <0x2d0>;',
+                      '\t\t\ttouchscreen-size-y = <0x500>;',
+                      '\t\t\tpinctrl-names = "default";',
+                      '\t\t\tpinctrl-0 = <%s>;' % pin_ph]
+              if l10:
+                  node.append('\t\t\tvcc-supply = <%s>;' % l10)
+              if l5:
+                  node.append('\t\t\tiovcc-supply = <%s>;' % l5)
+              node += ['\t\t\tstatus = "okay";', '\t\t};\n']
+              print("regulator l10=%s l5=%s tlmm=%s" % (l10, l5, tlmm))
+
+              head_end = body.find("{")
+              head = body if head_end < 0 else body[:head_end]
+              head2 = re.sub(r'status\s*=\s*"disabled"\s*;', 'status = "okay";', head, count=1)
+              src = src[:start] + head2 + body[len(head):] + "\n".join(node) + src[end:]
+
+              m_t = re.search(r"pinctrl@1000000\s*\{", src)
+              te = block_end(src, m_t.end())
+              pin = ('\n\t\tts-active-state {\n'
+                     '\t\t\tpins = "gpio64", "gpio65";\n'
+                     '\t\t\tfunction = "gpio";\n'
+                     '\t\t\tdrive-strength = <0x02>;\n'
+                     '\t\t\tbias-pull-up;\n'
+                     '\t\t\tphandle = <%s>;\n'
+                     '\t\t};\n') % pin_ph
+              src = src[:te] + pin + src[te:]
 
           if src != orig:
-              with open(path, "w", encoding="utf-8") as f:
-                  f.write(src)
+              open(path, "w", encoding="utf-8").write(src)
               print("DTS berhasil dimodifikasi")
           else:
               print("Tidak ada perubahan pada DTS ini")
@@ -261,7 +307,7 @@ jobs:
                 continue
               fi
 
-              if grep -qiE 'touchscreen|goodix|ft5|edt|i2c@' "$DTS_TMP"; then
+              if grep -q 'i2c@78b7000' "$DTS_TMP"; then
                 echo "Memproses DTB: $DTB (compatible target: $IN_TOUCH_COMPAT)"
                 sudo cp "$DTB" "${DTB}.bak"
                 python3 /tmp/patch_dts.py "$DTS_TMP" "$IN_TOUCH_COMPAT"
